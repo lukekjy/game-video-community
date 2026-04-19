@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>게임 영상 커뮤니티 - 완전 커스텀 팝업 버전</title>
+    <link rel="stylesheet" href="https://unpkg.com/98.css">
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <style>
+        body { background-color: #008080; margin: 0; padding: 20px; font-family: "Malgun Gothic", "맑은 고딕", Arial, sans-serif; }
+        #login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #008080; display: flex; justify-content: center; align-items: center; z-index: 999; }
+        .main-container { max-width: 1000px; margin: 0 auto; display: none; }
+        .nav-bar { display: flex; gap: 5px; margin-bottom: 15px; padding: 5px; background: #c0c0c0; border-bottom: 2px groove #fff; }
+        #video-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
+        .video-thumb-container { width: 100%; aspect-ratio: 16/9; background: #000; border: 2px inset #fff; cursor: pointer; display: flex; justify-content: center; align-items: center; color: #0f0; overflow: hidden; position: relative; }
+        .video-thumb-container video { width: 100%; height: 100%; object-fit: cover; }
+        .click-hint { position: absolute; bottom: 5px; right: 5px; background: rgba(0,0,0,0.6); color: #fff; font-size: 9px; padding: 2px 4px; pointer-events: none; }
+        
+        /* 모든 다이얼로그 공통 스타일 */
+        .window.shadow { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1000; min-width: 320px; box-shadow: 4px 4px 0 rgba(0,0,0,0.3); }
+        #view-dialog { width: 85%; max-width: 900px; }
+        #view-dialog video { width: 100%; border: 2px inset #fff; background: #000; }
+        #debug-log { background: #000; color: #0f0; padding: 8px; height: 80px; overflow-y: auto; font-family: monospace; font-size: 10px; border: 2px inset #fff; margin-top: 10px; }
+        .admin-controls { margin-top: 5px; display: flex; gap: 3px; justify-content: flex-end; }
+        .admin-badge { background: #000080; color: #fff; padding: 2px 5px; font-size: 10px; margin-left: 5px; vertical-align: middle; }
+    </style>
+</head>
+<body>
+    <!-- 1. 로그인 창 -->
+    <div id="login-overlay">
+        <div class="window" style="width: 300px">
+            <div class="title-bar"><div class="title-bar-text">시스템 로그인</div></div>
+            <div class="window-body">
+                <div style="display:flex; flex-direction:column; gap:5px;">
+                    <label>이메일:</label><input id="login-email" type="email">
+                    <label>비밀번호:</label><input id="login-password" type="password">
+                </div>
+                <div class="field-row" style="justify-content: flex-end; margin-top: 15px;">
+                    <button id="login-btn" class="default">접속</button>
+                </div>
+                <p id="login-error" style="color:red; font-size:11px; margin-top:10px;"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 메인 UI -->
+    <div id="main-ui" class="main-container">
+        <div class="window">
+            <div class="title-bar"><div class="title-bar-text">게임 영상 보관함 <span id="admin-indicator"></span></div></div>
+            <div class="window-body">
+                <nav class="nav-bar">
+                    <button onclick="openDialog('upload-dialog')">영상 올리기</button>
+                    <button onclick="firebase.auth().signOut()">로그아웃</button>
+                    <div style="flex-grow:1; text-align:right;">ID: <span id="user-display"></span></div>
+                </nav>
+                <div id="video-list">영상을 불러오는 중...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. 업로드 팝업 -->
+    <div id="upload-dialog" class="window shadow">
+        <div class="title-bar"><div class="title-bar-text">신규 데이터 등록</div><div class="title-bar-controls"><button aria-label="Close" onclick="closeDialog('upload-dialog')"></button></div></div>
+        <div class="window-body">
+            <form id="upload-form">
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <label>제목:</label><input id="up-title" type="text" required>
+                    <label>설명:</label><textarea id="up-desc" rows="2" required></textarea>
+                    <label>영상 선택:</label><input id="up-file" type="file" accept="video/*" required>
+                </div>
+                <div id="up-status" style="display:none; margin-top:10px;">
+                    <progress id="up-progress" value="0" max="100" style="width:100%"></progress>
+                </div>
+                <div id="debug-log">대기 중...</div>
+                <div class="field-row" style="justify-content: flex-end; margin-top: 10px;">
+                    <button type="submit" id="up-btn" class="default">등록 시작</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 4. 영상 확대보기 팝업 -->
+    <div id="view-dialog" class="window shadow">
+        <div class="title-bar">
+            <div class="title-bar-text" id="view-title">영상 감상</div>
+            <div class="title-bar-controls"><button aria-label="Close" onclick="closeViewDialog()"></button></div>
+        </div>
+        <div class="window-body">
+            <div id="view-video-container"></div>
+            <p id="view-desc" style="background:#fff; padding:10px; border:1px inset #808080; margin-top:10px;"></p>
+            <div class="field-row" style="justify-content: flex-end;"><button onclick="closeViewDialog()">닫기</button></div>
+        </div>
+    </div>
+
+    <!-- 5. 수정 팝업 -->
+    <div id="edit-dialog" class="window shadow">
+        <div class="title-bar"><div class="title-bar-text">수정 마법사</div><div class="title-bar-controls"><button aria-label="Close" onclick="closeDialog('edit-dialog')"></button></div></div>
+        <div class="window-body">
+            <form id="edit-form">
+                <input type="hidden" id="edit-id">
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <label>제목:</label><input id="edit-title" type="text" required style="width:100%">
+                    <label>설명:</label><textarea id="edit-desc" rows="3" required style="width:100%"></textarea>
+                </div>
+                <div class="field-row" style="justify-content: flex-end; margin-top: 15px;"><button type="submit" class="default">수정</button></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 6. 커스텀 알림창 (alert 대체) -->
+    <div id="alert-dialog" class="window shadow">
+        <div class="title-bar"><div class="title-bar-text">알림</div></div>
+        <div class="window-body" style="text-align: center;">
+            <p id="alert-msg" style="margin: 20px 0;"></p>
+            <button class="default" onclick="closeDialog('alert-dialog')">확인</button>
+        </div>
+    </div>
+
+    <!-- 7. 커스텀 확인창 (confirm 대체) -->
+    <div id="confirm-dialog" class="window shadow">
+        <div class="title-bar"><div class="title-bar-text">확인</div></div>
+        <div class="window-body">
+            <p id="confirm-msg" style="margin: 20px 0; text-align: center;"></p>
+            <div class="field-row" style="justify-content: center; gap: 10px;">
+                <button id="confirm-yes-btn" class="default">예</button>
+                <button onclick="closeDialog('confirm-dialog')">아니오</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyDLqvM7-CKKs9M1K6vCUiikZLjL-CX1ftE",
+            authDomain: "my-game-community-c6190.firebaseapp.com",
+            projectId: "my-game-community-c6190",
+            messagingSenderId: "455082651411",
+            appId: "1:455082651411:web:b5c6d3f018fa5f6a3fb4e6"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        // 팝업 제어 함수
+        const openDialog = (id) => document.getElementById(id).style.display = 'block';
+        const closeDialog = (id) => document.getElementById(id).style.display = 'none';
+        
+        // 커스텀 안내 팝업 (alert 대체)
+        const showInfo = (msg) => {
+            document.getElementById('alert-msg').textContent = msg;
+            openDialog('alert-dialog');
+        };
+
+        // 커스텀 확인 팝업 (confirm 대체)
+        const showConfirm = (msg, onConfirm) => {
+            document.getElementById('confirm-msg').textContent = msg;
+            const yesBtn = document.getElementById('confirm-yes-btn');
+            yesBtn.onclick = () => {
+                onConfirm();
+                closeDialog('confirm-dialog');
+            };
+            openDialog('confirm-dialog');
+        };
+
+        const isAdmin = (user) => user && user.email && user.email.startsWith('lukekjy1310');
+
+        auth.onAuthStateChanged(user => {
+            if(user) { 
+                document.getElementById('login-overlay').style.display='none'; 
+                document.getElementById('main-ui').style.display='block'; 
+                document.getElementById('user-display').textContent=user.email.split('@')[0];
+                if(isAdmin(user)) document.getElementById('admin-indicator').innerHTML = '<span class="admin-badge">ADMIN</span>';
+                loadVideos(); 
+            } else { 
+                document.getElementById('login-overlay').style.display='flex'; 
+                document.getElementById('main-ui').style.display='none'; 
+            }
+        });
+
+        document.getElementById('login-btn').onclick = () => {
+            auth.signInWithEmailAndPassword(document.getElementById('login-email').value, document.getElementById('login-password').value)
+                .catch(e => {
+                    document.getElementById('login-error').textContent = "로그인 실패: " + e.message;
+                });
+        };
+
+        function loadVideos() {
+            const admin = isAdmin(auth.currentUser);
+            db.collection("videos").orderBy("createdAt", "desc").onSnapshot(qs => {
+                const list = document.getElementById('video-list'); list.innerHTML = '';
+                if(qs.empty) { list.innerHTML = '<p style="grid-column: 1/-1; text-align:center; padding:50px;">영상이 없습니다.</p>'; return; }
+                qs.forEach(doc => {
+                    const d = doc.data(); const id = doc.id;
+                    const card = document.createElement('div'); card.className = 'video-card';
+                    let adminUI = admin ? `<div class="admin-controls"><button onclick="openEdit('${id}', '${d.title.replace(/'/g, "\\'")}', '${d.description.replace(/'/g, "\\'")}')">수정</button><button onclick="deleteVideoHandler('${id}', ${d.totalChunks})">삭제</button></div>` : '';
+                    card.innerHTML = `
+                        <fieldset>
+                            <legend style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${d.title}</legend>
+                            <div id="vid-${id}" class="video-thumb-container">복원 중...</div>
+                            ${adminUI}
+                            <p style="font-size:10px; color:#555; text-align:right; margin-top:5px;">${d.userName}</p>
+                        </fieldset>`;
+                    list.appendChild(card);
+                    assembleVideo(id, d.totalChunks, d.title, d.description, d.mimeType || 'video/mp4');
+                });
+            });
+        }
+
+        async function assembleVideo(vid, total, title, desc, mime) {
+            const container = document.getElementById(`vid-${vid}`);
+            let chunks = [];
+            try {
+                for(let i = 0; i < total; i++) {
+                    const snap = await db.collection("videos").doc(vid).collection("chunks").doc(i.toString()).get();
+                    if(snap.exists) {
+                        chunks.push(snap.data().data.toUint8Array());
+                        if(container) container.textContent = `${Math.round((i+1)/total*100)}%`;
+                    }
+                }
+                const blob = new Blob(chunks, { type: mime });
+                const url = URL.createObjectURL(blob);
+                if(container) {
+                    container.innerHTML = `<video src="${url}" muted playsinline preload="metadata"></video><div class="click-hint">클릭하여 확대</div>`;
+                    container.onclick = () => openView(url, title, desc);
+                }
+            } catch(e) { if(container) container.textContent = "Error"; }
+        }
+
+        function openView(url, title, desc) {
+            const container = document.getElementById('view-video-container');
+            document.getElementById('view-title').textContent = title;
+            document.getElementById('view-desc').textContent = desc;
+            container.innerHTML = `<video src="${url}" controls autoplay preload="auto" playsinline style="width:100%"></video>`;
+            const v = container.querySelector('video');
+            v.onloadedmetadata = () => v.currentTime = 0;
+            openDialog('view-dialog');
+        }
+
+        function closeViewDialog() {
+            document.getElementById('view-video-container').innerHTML = '';
+            closeDialog('view-dialog');
+        }
+
+        // 삭제 핸들러 (커스텀 확인창 사용)
+        window.deleteVideoHandler = (vid, totalChunks) => {
+            showConfirm("이 영상을 정말로 삭제하시겠습니까?", async () => {
+                try {
+                    for(let i = 0; i < totalChunks; i++) await db.collection("videos").doc(vid).collection("chunks").doc(i.toString()).delete();
+                    await db.collection("videos").doc(vid).delete();
+                    showInfo("성공적으로 삭제되었습니다.");
+                } catch(e) { showInfo("삭제 중 오류: " + e.message); }
+            });
+        };
+
+        window.openEdit = (id, title, desc) => {
+            document.getElementById('edit-id').value = id;
+            document.getElementById('edit-title').value = title;
+            document.getElementById('edit-desc').value = desc;
+            openDialog('edit-dialog');
+        };
+
+        document.getElementById('edit-form').onsubmit = async (e) => {
+            e.preventDefault();
+            try {
+                await db.collection("videos").doc(document.getElementById('edit-id').value).update({
+                    title: document.getElementById('edit-title').value,
+                    description: document.getElementById('edit-desc').value
+                });
+                closeDialog('edit-dialog');
+                showInfo("수정 작업이 완료되었습니다.");
+            } catch(e) { showInfo("수정 실패: " + e.message); }
+        };
+
+        document.getElementById('upload-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const file = document.getElementById('up-file').files[0];
+            const btn = document.getElementById('up-btn');
+            if(!file) return;
+            btn.disabled = true;
+            document.getElementById('up-status').style.display = 'block';
+            const l = document.getElementById('debug-log');
+            l.innerHTML = '';
+            try {
+                const CHUNK_SIZE = 800 * 1024;
+                const arrayBuffer = await file.arrayBuffer();
+                const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
+                const videoRef = await db.collection("videos").add({
+                    title: document.getElementById('up-title').value,
+                    description: document.getElementById('up-desc').value,
+                    totalChunks: totalChunks,
+                    mimeType: file.type,
+                    userName: auth.currentUser.email.split('@')[0],
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunk = arrayBuffer.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, arrayBuffer.byteLength));
+                    await videoRef.collection("chunks").doc(i.toString()).set({ data: firebase.firestore.Blob.fromUint8Array(new Uint8Array(chunk)) });
+                    const p = Math.round((i + 1) / totalChunks * 100);
+                    document.getElementById('up-progress').value = p;
+                    l.innerHTML += `<div>> 전송 중... ${p}%</div>`;
+                    l.scrollTop = 999;
+                }
+                closeDialog('upload-dialog');
+                showInfo("영상이 데이터베이스에 무사히 저장되었습니다.");
+                btn.disabled = false;
+                document.getElementById('upload-form').reset();
+            } catch (err) { showInfo("저장 오류: " + err.message); btn.disabled = false; }
+        };
+    </script>
+</body>
+</html>
